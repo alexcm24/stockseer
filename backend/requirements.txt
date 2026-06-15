@@ -4,5 +4,4 @@ python-dotenv
 pandas
 numpy
 scikit-learn
-yfinance
 requests

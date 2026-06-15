@@ -3,10 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
 import os
 import requests
-from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
-import yfinance as yf
 from sklearn.linear_model import LinearRegression
 from fastapi import HTTPException
 
@@ -106,98 +104,52 @@ def ohlc(symbol: str):
 
 
 
-def extract_closes(df: pd.DataFrame | pd.Series, sym_u: str) -> pd.DataFrame:
+def fetch_closes_td(symbol: str, outputsize: int = 730) -> pd.DataFrame:
     """
-    Normalize yfinance output to a 2-col DataFrame: ['date','close'].
-    Handles Series, single-level DataFrame, and MultiIndex (either orientation).
+    Fetch up to ~2 years of daily closes from Twelve Data.
+    Returns a DataFrame with columns ['date', 'close'] sorted oldest -> newest.
     """
-    # 1) Plain Series (rare)
-    if isinstance(df, pd.Series):
-        s = df.dropna()
-        out = s.reset_index()
-        out.columns = ["date", "close"]
-        return out
+    if not TWELVE_DATA_KEY:
+        raise HTTPException(status_code=500, detail="TWELVE_DATA_KEY is not set")
 
-    # 2) MultiIndex columns
-    if isinstance(df.columns, pd.MultiIndex):
-        # Try level-0 == 'Close'
-        try:
-            part = df.xs("Close", level=0, axis=1)
-            if isinstance(part, pd.Series):
-                s = part
-            else:
-                s = part[sym_u] if sym_u in part.columns else part.iloc[:, 0]
-            out = s.dropna().reset_index()
-            out.columns = ["date", "close"]
-            return out
-        except Exception:
-            pass
-        # Try level-1 == 'Close' (your screenshot shows tuples like ('Close','AAPL'))
-        try:
-            part = df.xs("Close", level=1, axis=1)
-            if isinstance(part, pd.Series):
-                s = part
-            else:
-                s = part[sym_u] if sym_u in part.columns else part.iloc[:, 0]
-            out = s.dropna().reset_index()
-            out.columns = ["date", "close"]
-            return out
-        except Exception:
-            pass
-        raise HTTPException(500, f"Unexpected MultiIndex columns: {df.columns.tolist()}")
+    try:
+        r = requests.get(
+            f"{TWELVE_BASE}/time_series",
+            params={
+                "symbol": symbol,
+                "interval": "1day",
+                "outputsize": outputsize,
+                "order": "ASC",
+                "apikey": TWELVE_DATA_KEY,
+            },
+            timeout=15,
+        )
+        js = r.json()
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Twelve Data error: {e}")
 
-    # 3) Single-level DataFrame
-    # Standard: columns like ['Open','High','Low','Close','Adj Close','Volume']
-    if "Close" in df.columns:
-        s = df["Close"].dropna()
-        out = s.reset_index()
-        out.columns = ["date", "close"]
-        return out
+    # Twelve Data returns {"status":"error", ...} or no "values" on failure
+    if "values" not in js or not js["values"]:
+        raise HTTPException(status_code=400, detail=js)
 
-    # Lowercase or ticker-named column fallbacks
-    cols_lower = [str(c).lower() for c in df.columns]
-    if "close" in cols_lower:
-        s = df[df.columns[cols_lower.index("close")]].dropna()
-        out = s.reset_index()
-        out.columns = ["date", "close"]
-        return out
-    if sym_u in df.columns:
-        s = df[sym_u].dropna()
-        out = s.reset_index()
-        out.columns = ["date", "close"]
-        return out
-    for c in df.columns:
-        if str(c).lower() == sym_u.lower():
-            s = df[c].dropna()
-            out = s.reset_index()
-            out.columns = ["date", "close"]
-            return out
-
-    raise HTTPException(500, f"Unexpected columns from yfinance: {df.columns.tolist()}")
+    rows = [
+        {"date": v["datetime"], "close": float(v["close"])}
+        for v in js["values"]
+        if v.get("close") is not None
+    ]
+    out = pd.DataFrame(rows).sort_values("date").reset_index(drop=True)
+    return out
 
 
 @app.get("/forecast")
 def forecast(symbol: str):
     """
-    Linear Regression baseline on ~2 years of daily closes (yfinance).
-    Robust to yfinance output shapes. Returns next-day prediction, MSE,
-    directional accuracy vs naive, and full series for charting.
+    Linear Regression baseline on ~2 years of daily closes (Twelve Data).
+    Returns next-day prediction, MSE, directional accuracy vs naive,
+    and the full series for charting.
     """
     sym_u = symbol.upper()
-    end = datetime.utcnow()
-    start = end - timedelta(days=365 * 2 + 14)
-
-    df = yf.download(
-        sym_u,
-        start=start.date(),
-        end=end.date(),
-        progress=False,
-        auto_adjust=False,  # ensure classic OHLC columns exist
-        actions=False,
-        group_by="ticker",  # yfinance may still return MultiIndex; we handle it
-    )
-
-    closes = extract_closes(df, sym_u)
+    closes = fetch_closes_td(sym_u)
 
     # Need enough data to split train/test
     if len(closes) < 30:
