@@ -48,8 +48,8 @@ export default function Home() {
           setOhlc(o);
           setFcast(f);
         }
-      } catch (e: any) {
-        if (!cancel) setErr(e?.message ?? "Failed to load data");
+      } catch (e: unknown) {
+        if (!cancel) setErr(e instanceof Error ? e.message : "Failed to load data");
       } finally {
         if (!cancel) setLoading(false);
       }

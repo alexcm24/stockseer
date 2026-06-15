@@ -35,10 +35,10 @@ export default function SearchBox({ onPick }: { onPick: (s: string) => void }) {
         const data = (await res.json()) as Hit[] | unknown;
         setHits(Array.isArray(data) ? data : []);
         setOpen(true);
-      } catch (e: any) {
+      } catch (e: unknown) {
         setHits([]);
         setOpen(false);
-        setErr(e?.message ?? "Network error");
+        setErr(e instanceof Error ? e.message : "Network error");
       } finally {
         setLoading(false);
       }

@@ -1,0 +1,17 @@
+# macOS
+.DS_Store
+
+# Python (backend)
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# Env
+.env
+.env.*
+
+# Editor
+.vscode/
+.idea/
